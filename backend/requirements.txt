@@ -1,0 +1,12 @@
+sentence-transformers
+torch
+fastapi
+pydantic
+python-dotenv
+supabase
+# Nya/Uppdaterade för Asynkront/Produktion
+httpx # För asynkrona LLM-anrop
+gunicorn # Master process manager
+uvicorn[standard] # Worker för Gunicorn (ASGI)
+# starlette ingår oftast i uvicorn/fastapi, men det skadar inte att lägga till om du får fel:
+# starlette
