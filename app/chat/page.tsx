@@ -1,185 +1,298 @@
 'use client'
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, Suspense } from 'react'
 import { triggerAiJob } from '../../services/aiAction'; 
 import QuizCard from '../../components/chat/QuizCard'
 import { supabase } from '../../utils/supabaseClient'
+import { useRouter, useSearchParams } from 'next/navigation'; 
+import type { ChatMessage } from '../../types/chat'
 
-export default function ChatPage() {
+
+function ChatContent() {
+  const [subject, setSubject] = useState('fysik')
   const [input, setInput] = useState('')
   const [status, setStatus] = useState('')
-  const [result, setResult] = useState<any>(null)
   const [isWorking, setIsWorking] = useState<boolean>(false)
+  const [quizDone, setQuizDone] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  const [quizDone, setQuizDone] = useState(false) // Ny state för att låsa upp flashcards
+  const [user, setUser] = useState<any>(null);
+  const [isPaying, setIsPaying] = useState(false);
 
-  // Autoscroll till botten när nytt innehåll dyker upp
+  const [saveError, setSaveError] = useState<any>(null)
+  
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [activeChatId, setActiveChatId] = useState<string | null>(null)
+
+  const router = useRouter()
+  const channelRef = useRef<any>(null);
+  const searchParams = useSearchParams()
+  const urlChatId = searchParams.get('id')
+
+  useEffect(() => {
+  const getUser = async () => {
+    // Hämta användaren
+    const { data: { user } } = await supabase.auth.getUser();
+    setUser(user);
+
+    if (user) {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('is_paying') // kKollar om betalande
+        .eq('id', user.id)
+        .single();
+
+      if (data) {
+        setIsPaying(data.is_paying);
+      }
+    }
+  };
+
+  getUser();
+}, []);
+
+  
+
+  // Ladda gammal chatt
+  useEffect(() => {
+    if (urlChatId) {
+      const loadChat = async () => {
+        const { data } = await supabase
+          .from('chats')
+          .select('*')
+          .eq('id', urlChatId)
+          .single()
+        
+        if (data) {
+          setMessages(data.full_data || [])
+          setActiveChatId(data.id)
+        }
+      }
+      loadChat()
+    }
+  }, [urlChatId])
+
+  // Autoscroll
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [result, status])
+  }, [messages, status])
+
+  const saveToSupabase = async (history: ChatMessage[], firstQuery: string) => {
+    if (!user) return
+
+    if (!activeChatId) {
+      const { data, error } = await supabase
+        .from('chats')
+        .insert({
+          user_id: user.id,
+          title: firstQuery.substring(0, 40),
+          full_data: history,
+        })
+        .select()
+        .single()
+      
+        if(error) setSaveError(error)
+      if (data) setActiveChatId(data.id)
+    } else {
+      const { data, error } = await supabase
+        .from('chats')
+        .update({ full_data: history })
+        .eq('id', activeChatId)
+
+        if(error) setSaveError(error)
+    }
+
+    
+  }
+
+  const moreQsAllowed = async () => {
+    // Om de betalar, tillåt alltid
+    if (isPaying) return true;
+
+    // Om de inte är inloggade 
+    if (!user) {
+      return messages.length < 4; // Tillåt 2 frågor
+    }
+
+    
+    if (!activeChatId) {
+      const today = new Date().toISOString().split('T')[0];
+      
+      const { count, error } = await supabase
+        .from('chats')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', user.id)
+        .gte('created_at', today);
+
+      if (count !== null && count >= 3) {
+        alert("Du har nått gränsen på 3 nya lektioner per dag. Uppgradera till Pro!");
+        return false;
+      }
+    }
+
+    return true; 
+  };
 
   const handleSend = async () => {
     if (!input.trim() || isWorking) return;
 
+    const allowed = await moreQsAllowed();
+    if (!allowed) return; // Stoppa om gränsen är nådd
+
     setIsWorking(true)
     setQuizDone(false)
-    setResult(null)
-    if (!input.trim()) return
     const currentInput = input
-    setInput('') // Rensa direkt för Gemini-känsla
+    setInput('') 
     setStatus('Tänker...')
-    
+
+    const newUserMsg: ChatMessage = { role: 'user', content: currentInput };
+    const historyWithUser = [...messages, newUserMsg];
+    setMessages(historyWithUser);
+
     try {
-    const jobId = await triggerAiJob(currentInput, "laroplan_1-9_fysik.txt");
-    
-    const channel = supabase
-      .channel(`job-${jobId}`)
-      .on('postgres_changes', { 
-          event: 'UPDATE', 
-          schema: 'public', 
-          table: 'activity_jobs', 
-          filter: `job_id=eq.${jobId}` 
-        }, 
+      const jobId = await triggerAiJob(currentInput, `laroplan_1-9_${subject}.txt`);
+      
+      const channel = supabase
+        .channel(`job-${jobId}`)
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'activity_jobs', filter: `job_id=eq.${jobId}` }, 
         (payload) => {
           if (payload.new.status === 'COMPLETED') {
-            setResult(payload.new.result_data);
-            console.log("RESULT retrieved", result)
+            const data = payload.new.result_data;
+            const newAiMsg: ChatMessage = { 
+              role: 'assistant', 
+              content: data.explanation,
+              quiz: data.quiz,
+              flashcards: data.flashcards
+            };
+
+            const finalHistory = [...historyWithUser, newAiMsg];
+            setMessages(finalHistory);
             setStatus('');
-            setIsWorking(false); // NU är vi klara!
+            setIsWorking(false);
+            
+            if (user) {
+              saveToSupabase(finalHistory, currentInput);
+            }
             supabase.removeChannel(channel);
+            channelRef.current = null
           }
-        }
-      )
-      .subscribe();
-      } catch (err) {
-        setStatus('Något gick fel. Försök igen.');
-        setIsWorking(false); // Återställ knappen vid fel
-        console.error(err);
-      }
+        })
+        .subscribe();
+
+        channelRef.current = channel;
+
+    } catch (err) {
+      setStatus('Något gick fel.');
+      setIsWorking(false);
+    }
   };
 
-  const saveLesson = async () => {
-    const { data: { user } } = await supabase.auth.getUser()
-    await supabase.from('saved_lessons').insert({
-      user_id: user?.id,
-      title: input || "Fysiklektion",
-      full_data: result 
-    })
-    alert("Sparat!")
-  }
+  useEffect(() => {
+    return () => {
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+      }
+    };
+  }, []);
+
+  const startNewChat = () => {
+      setMessages([]);
+      setActiveChatId(null);
+      setQuizDone(false);
+      setStatus('');
+      router.push('/chat'); // Rensar ID:t från URL:en
+    };
 
   return (
-    <div className="flex flex-col h-screen bg-white text-slate-800 font-sans">
-      
-      {/* HEADER */}
-      <header className="p-4 border-b flex justify-between items-center bg-white/80 backdrop-blur-md sticky top-0 z-10">
-        <h1 className="text-xl font-semibold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
-          Kriterium AI
-        </h1>
+    <div className="flex flex-col h-screen text-slate-800 bg-white">
+      <header className="p-4 border-b flex justify-between items-center bg-white sticky top-0 z-10">
+        <h1 className="text-xl font-bold text-blue-600">Kriterium AI</h1>
+        <select 
+          value={subject} 
+          onChange={(e) => setSubject(e.target.value)} 
+          
+          disabled={messages.length > 0} 
+          
+          className={`p-2 border rounded-lg text-sm transition-colors ${
+            messages.length > 0 
+              ? 'bg-slate-100 text-slate-400 cursor-not-allowed' 
+              : 'bg-white text-slate-800'
+          }`}
+          suppressHydrationWarning
+        >
+          <option value="fysik">Fysik</option>
+          <option value="biologi">Biologi</option>
+        </select>
+        <button 
+          onClick={startNewChat}
+          className="ml-2 text-xs text-blue-500 hover:underline"
+        >
+          Ny lektion
+        </button>
       </header>
 
-      {/* CHATT-YTA (Scrollbar) */}
-      <main 
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6"
-      >
+      <main ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-8">
         <div className="max-w-3xl mx-auto w-full">
-          {/* Välkomstmeddelande om ingen data finns */}
-          {!result && !status && (
-            <div className="text-center mt-20">
-              <h2 className="text-4xl font-medium text-slate-300">Vad vill du lära dig idag?</h2>
-            </div>
+          {messages.length === 0 && !status && (
+            <div className="text-center mt-20 text-slate-300 text-3xl">Vad vill du lära dig?</div>
           )}
 
-          {/* AI SVARET (Här kan vi senare lägga in Quiz-komponenterna) */}
-         
-          {result && (
-            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-10">
-              
-              {/* STEG 1: Kort introduktion/förklaring (alltid synlig) */}
-              <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
-                <h3 className="text-sm font-bold text-blue-600 mb-2 uppercase tracking-widest text-center">
-                  Dagens genomgång
-                </h3>
-                <p className="text-slate-700 leading-relaxed text-center">
-                  Här är en sammanfattning av det du ville lära dig. 
-                  Svara på quizen nedan för att låsa upp dina flashcards!
-                </p>
+          {messages.map((msg, idx) => (
+            <div key={idx} className={`flex flex-col mb-4 ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+              <div className={`max-w-[80%] p-4 rounded-2xl ${msg.role === 'user' ? 'bg-green-600 text-white' : 'bg-slate-100 text-slate-800'}`}>
+                {msg.content}
               </div>
 
-              {/* STEG 2: Quiz (Tvingande hinder) */}
-              {!quizDone ? (
-                <div className="flex flex-col items-center">
+              {msg.role === 'assistant' && msg.quiz && (
+                <div className="w-full mt-4 space-y-4">
                   <QuizCard 
-  
-                    question={result.quiz.questions[0]} 
+                    question={msg.quiz.questions[0]} 
                     onCorrect={() => setQuizDone(true)} 
                   />
-                </div>
-              ) : (
-                /* STEG 3: Flashcards & Spara-knapp (Visas bara när quizDone === true) */
-                <div className="animate-in zoom-in duration-500 space-y-6">
-                  <div className="bg-green-50 p-6 rounded-3xl border border-green-100">
-                    <h2 className="text-xl font-bold text-green-700 mb-4 text-center italic">
-                      Snyggt svarat! Här är dina minneskort:
-                    </h2>
-                    
-                    <div className="grid gap-4 md:grid-cols-2">
-                      {result.flashcards.items.map((card: any) => (
-                        <div key={card.card_id} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 hover:shadow-md transition-shadow">
-                          <p className="font-bold text-blue-600 mb-1">{card.term}</p>
-                          <p className="text-sm text-slate-600">{card.definition}</p>
+                  {(quizDone || idx < messages.length - 1) && msg.flashcards && (
+                    <div className="grid gap-2 md:grid-cols-2 mt-4">
+                      {msg.flashcards.items.map((card: any, i: number) => (
+                        <div key={i} className="bg-green-50 p-3 rounded-xl border border-green-100 text-sm">
+                          <p className="font-bold text-green-700">{card.term}</p>
+                          <p>{card.definition}</p>
                         </div>
                       ))}
                     </div>
-
-                    <button 
-                      onClick={saveLesson}
-                      className="mt-8 w-full py-4 bg-slate-900 text-white rounded-2xl font-bold hover:bg-black transition-all active:scale-95 shadow-lg"
-                    >
-                      Spara lektionen i mitt bibliotek
-                    </button>
-                  </div>
+                  )}
                 </div>
               )}
             </div>
-          )}
-                    {/* Laddningsindikator */}
-          {status && (
-            <div className="flex items-center gap-2 text-slate-200 italic animate-pulse">
-              <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-              {status}
-            </div>
-          )}
+          ))}
+          {status && <div className="text-slate-400 animate-pulse mt-4">{status}</div>}
         </div>
       </main>
 
-      {/* INPUT-FÄLT (Fast i botten) */}
-      <footer className="p-4 bg-white">
-        <div className="max-w-3xl mx-auto relative group">
-          <div className="flex items-center bg-slate-100 rounded-2xl p-2 shadow-sm focus-within:ring-2 ring-blue-500/20 transition-all">
-            <input 
-              className="flex-1 bg-transparent p-3 outline-none text-slate-700 min-w-0"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-              placeholder="Skriv en fråga..."
-            />
-            <button 
-              disabled={isWorking}
-              onClick={handleSend}
-              className="p-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-colors"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
-            </button>
-          </div>
-          <p className="text-[10px] text-center text-slate-400 mt-2">
-            Kriterium AI kan göra fel. Dubbelkolla viktig information.
-          </p>
+      {saveError && <div className="text-fuchsia-800">Chatt har inte sparats</div>}
+      <footer className="p-4 border-t">
+        <div className="max-w-3xl mx-auto flex gap-2">
+          <input 
+            suppressHydrationWarning 
+            className="flex-1 bg-slate-100 p-3 rounded-xl outline-none" 
+            value={input} 
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+            placeholder="Skriv din fråga här..."
+          />
+          <button onClick={handleSend} disabled={isWorking} className="bg-blue-600 text-white p-3 rounded-xl">
+            Skaffa svar
+          </button>
         </div>
       </footer>
     </div>
+  )
+}
+
+// Huvudkomponenten som Next.js faktiskt laddar
+export default function ChatPage() {
+  return (
+    <Suspense fallback={<div>Laddar...</div>}>
+      <ChatContent />
+    </Suspense>
   )
 }

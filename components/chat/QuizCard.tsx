@@ -1,7 +1,12 @@
 // src/components/chat/QuizCard.tsx
 import { useState } from 'react'
 
-export default function QuizCard({ question, onCorrect }: { question: any, onCorrect: () => void }) {
+interface cardParams{
+    question: any, 
+    onCorrect: () => void 
+}
+
+export default function QuizCard({ question, onCorrect }: cardParams ) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [showFeedback, setShowFeedback] = useState(false)
 

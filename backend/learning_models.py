@@ -40,7 +40,7 @@ class QuizActivity(BaseModel):
     topic: str = Field(..., description="Ämne/rubrik för quizet (t.ex. 'Kunskapskrav i Biologi').")
     questions: List[QuizQuestion]
 
-# --- 3. Huvudmodell och Input ---
+# --- 3. Svar givet till användaren 
 
 class LearningActivityResponse(BaseModel):
     """Huvudmodell som håller alla genererade lärandeaktiviteter."""
@@ -56,7 +56,7 @@ class ActivityRequest(BaseModel):
     query: str = Field(..., description="Användarens prompt (t.ex. 'Ge mig 3 flashcards och ett quiz om fotosyntes i biologi åk 7-9').")
     quiz_questions: int = Field(0, ge=0, le=5, description="Antal quizfrågor att generera.")
     flashcard_items: int = Field(0, ge=0, le=5, description="Antal flashcard-begrepp att generera.")
-     # NYTT: Nu måste klienten skicka med ämnet explicit.
+    
     subject: str = "laroplan_1-9_fysik.txt"
     # Validering: Minst en aktivitet måste begäras
     def check_min_activities(self):
