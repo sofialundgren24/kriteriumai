@@ -8,7 +8,7 @@ import asyncio
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks 
 from pydantic import BaseModel, Field
-from sentence_transformers import SentenceTransformer
+
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
@@ -31,6 +31,11 @@ load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") 
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent"
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+EMBEDDING_DIMENSION = 768
+
 if not GEMINI_API_KEY:
     print("VARNING: GEMINI_API_KEY saknas i .env. LLM-generering kommer att misslyckas.")
 
@@ -77,18 +82,7 @@ def resolve_pydantic_schema(schema: dict) -> dict:
     print("DEBUG: JSON Schema sanerat (tog bort $defs, löste $ref, konverterade 'const' till 'enum').")
     return final_schema
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-EMBEDDING_DIMENSION = 768 
-
-print("--- Serveruppstart: Laddar den tunga AI-modellen i minnet ---")
-
-try:
-    model = SentenceTransformer("intfloat/multilingual-e5-base") 
-    print("Sentence Transformer Modell laddad")
-except Exception as e:
-    print(f"FEL: Kunde inte ladda SentenceTransformer-modellen: {e}")
-    model = None
+ 
 
 # Initiera Supabase-klienten
 try:
@@ -113,20 +107,23 @@ app = FastAPI(
 
 async def fetch_relevant_chunks(query: str, subject: str, match_count: int = 8) -> List[str]:
     """Hämtar relevanta chunks från Supabase m.h.a. vektor-sökning."""
-    if model is None or supabase is None:
-        raise Exception("AI-tjänster (Embedding/DB) är inte klara.")
+    if not GEMINI_API_KEY:
+        raise Exception("Gemeni nyckel saknas.")
 
     try:
         # 1. Skapa inbäddning för användarens fråga (CPU-intensivt, körs i trådpool)
-        query_embedding_list_of_one = await run_in_threadpool(
-            model.encode, 
-            [query], 
-            normalize_embeddings=True, 
-            convert_to_numpy=False 
-        )
-        query_embedding_list = query_embedding_list_of_one[0].tolist()
+        async with httpx.AsyncClient(timeout=10.0) as client: 
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={GEMINI_API_KEY}"
+            payload = {
+                "model": "models/text-embedding-004",
+                "content": {"parts": [{"text": query}]}
+            }
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+            query_embedding = response.json()['embedding']['values']
+
     except Exception as e:
-        raise Exception(f"Kunde inte skapa inbäddning för frågan: {str(e)}")
+        raise Exception(f"Kunde inte skapa inbäddning: {str(e)}")
 
     # 2. Supabase-sökning via RPC
     try:
@@ -142,7 +139,7 @@ async def fetch_relevant_chunks(query: str, subject: str, match_count: int = 8) 
             res = supabase.rpc(
                 'match_chunks', 
                 {
-                    'query_embedding': query_embedding_list,
+                    'query_embedding': query_embedding,
                     'match_count': match_count,
                     'filter': subject_filter
                 }
@@ -398,22 +395,5 @@ async def get_job_status(job_id: str):
         raise HTTPException(status_code=500, detail=f"Internt databasfel: {str(e)}")
 
 
-# --- SLUTPUNKT 3: EMBED (Behålls som synkron för snabb åtkomst) ---
+# --- SLUTPUNKT 3: EMBED (Behålls som synkron för snabb åtkomst) --- tagits bort
 
-@app.post("/embed")
-def get_embedding_endpoint(request: TextRequest):
-    """Endpoint som beräknar inbäddningen för inkommande text."""
-    if model is None:
-        raise HTTPException(status_code=503, detail="Embedding Model är inte laddad.")
-        
-    try:
-        embedding = model.encode(
-            [request.text], 
-            normalize_embeddings=True, 
-            convert_to_numpy=True
-        )[0]
-        
-        return {"embedding": embedding.tolist()}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Fel vid inbäddning: {str(e)}")
