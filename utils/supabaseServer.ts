@@ -17,7 +17,7 @@ export async function createClient() {
           try {
             cookiesToSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options))
           } catch {
-            // vad fångar vi
+            // Om uppdatering av cookies vid fel tillfälle
           }
         },
       },
