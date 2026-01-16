@@ -23,6 +23,8 @@ function ChatContent() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [activeChatId, setActiveChatId] = useState<string | null>(null)
 
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+
   const router = useRouter()
   const channelRef = useRef<any>(null);
   const searchParams = useSearchParams()
@@ -112,7 +114,11 @@ function ChatContent() {
 
     // Om de inte är inloggade 
     if (!user) {
-      return messages.length < 4; // Tillåt 2 frågor
+      if (messages.length >= 4) {
+        setShowUpgradeModal(true);
+        return false;
+      }
+      return true;
     }
 
     
@@ -126,7 +132,7 @@ function ChatContent() {
         .gte('created_at', today);
 
       if (count !== null && count >= 3) {
-        alert("Du har nått gränsen på 3 nya lektioner per dag. Uppgradera till Pro!");
+        setShowUpgradeModal(true)
         return false;
       }
     }
@@ -151,6 +157,7 @@ function ChatContent() {
     setMessages(historyWithUser);
 
     try {
+      // Byt ordning?
       const jobId = await triggerAiJob(currentInput, `laroplan_1-9_${subject}.txt`);
       
       const channel = supabase
@@ -207,7 +214,9 @@ function ChatContent() {
   return (
     <div className="flex flex-col h-screen text-slate-800 bg-white">
       <header className="p-4 border-b flex justify-between items-center bg-white sticky top-0 z-10">
-        <h1 className="text-xl font-bold text-blue-600">Kriterium AI</h1>
+        <h1 className="text-xl font-bold text-blue-600">Kriterium AI
+          {isPaying && <span className="bg-amber-400 text-white text-[10px] px-2 py-0.5 rounded-full uppercase">Pro</span>}
+        </h1>
         <select 
           value={subject} 
           onChange={(e) => setSubject(e.target.value)} 
@@ -284,6 +293,30 @@ function ChatContent() {
           </button>
         </div>
       </footer>
+
+      {showUpgradeModal && (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <div className="bg-white p-8 rounded-2xl max-w-sm w-full text-center space-y-4 shadow-2xl">
+          <div className="text-4xl">🚀</div>
+          <h2 className="text-2xl font-bold">Dags för Pro?</h2>
+          <p className="text-slate-600">
+            Du har nått gränsen för gratislektioner. Skaffa Pro för att fortsätta lära dig utan gränser!
+          </p>
+          <button 
+            onClick={() => router.push('/pricing')}
+            className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition-colors"
+          >
+            Visa priser
+          </button>
+          <button 
+            onClick={() => setShowUpgradeModal(false)}
+            className="text-slate-400 text-sm hover:underline"
+          >
+            Kanske senare
+          </button>
+        </div>
+      </div>
+    )}
     </div>
   )
 }
