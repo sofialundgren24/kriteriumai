@@ -143,26 +143,56 @@ function ChatContent() {
   const handleSend = async () => {
     if (!input.trim() || isWorking) return;
 
+    // Om användare får ställa fler frågor
     const allowed = await moreQsAllowed();
-    if (!allowed) return; // Stoppa om gränsen är nådd
+    if (!allowed) return; 
 
-    setIsWorking(true)
-    setQuizDone(false)
-    const currentInput = input
-    setInput('') 
-    setStatus('Tänker...')
+    setIsWorking(true);
+    setQuizDone(false);
+    const currentInput = input;
+    setInput(''); 
+    setStatus('Tänker...');
 
     const newUserMsg: ChatMessage = { role: 'user', content: currentInput };
     const historyWithUser = [...messages, newUserMsg];
     setMessages(historyWithUser);
 
     try {
-      // Byt ordning?
+      // Spara i databas direkt
+      let currentChatId = activeChatId;
+
+      if (!currentChatId && user) {
+        const { data, error } = await supabase
+          .from('chats')
+          .insert({
+            user_id: user.id,
+            title: currentInput.substring(0, 40),
+            full_data: historyWithUser, 
+          })
+          .select()
+          .single();
+        
+        if (error) {
+          setSaveError(error);
+        } else if (data) {
+          currentChatId = data.id;
+          setActiveChatId(data.id);
+          
+          window.history.pushState({}, '', `/chat?id=${data.id}`);
+        }
+      }
+
+      // AI förfrågan
       const jobId = await triggerAiJob(currentInput, `laroplan_1-9_${subject}.txt`);
       
       const channel = supabase
         .channel(`job-${jobId}`)
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'activity_jobs', filter: `job_id=eq.${jobId}` }, 
+        .on('postgres_changes', { 
+          event: 'UPDATE', 
+          schema: 'public', 
+          table: 'activity_jobs', 
+          filter: `job_id=eq.${jobId}` 
+        }, 
         (payload) => {
           if (payload.new.status === 'COMPLETED') {
             const data = payload.new.result_data;
@@ -178,16 +208,25 @@ function ChatContent() {
             setStatus('');
             setIsWorking(false);
             
-            if (user) {
-              saveToSupabase(finalHistory, currentInput);
+            
+            if (user && currentChatId) {
+              supabase
+                .from('chats')
+                .update({ full_data: finalHistory })
+                .eq('id', currentChatId)
+                .then(({ error }) => {
+                  if (error) setSaveError(error);
+                });
             }
+
+            // Ta bort channel
             supabase.removeChannel(channel);
-            channelRef.current = null
+            channelRef.current = null;
           }
         })
         .subscribe();
 
-        channelRef.current = channel;
+      channelRef.current = channel;
 
     } catch (err) {
       setStatus('Något gick fel.');
