@@ -29,6 +29,7 @@ function ChatContent() {
   const channelRef = useRef<any>(null);
   const searchParams = useSearchParams()
   const urlChatId = searchParams.get('id')
+  const isSuccess = searchParams.get('success');
 
   useEffect(() => {
   const getUser = async () => {
@@ -242,6 +243,16 @@ function ChatContent() {
     };
   }, []);
 
+  useEffect(() => {
+  if (isSuccess) {
+   
+    const timer = setTimeout(() => {
+      router.replace('/chat'); 
+    }, 5000);
+    return () => clearTimeout(timer);
+  }
+}, [isSuccess]);
+
   const startNewChat = () => {
       setMessages([]);
       setActiveChatId(null);
@@ -279,6 +290,13 @@ function ChatContent() {
           Ny lektion
         </button>
       </header>
+
+       {isSuccess && (
+      <div className="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded relative mb-4">
+        <strong className="font-bold">Succé! </strong>
+        <span className="block sm:inline">Ditt konto har uppgraderats till Pro. Kör hårt!</span>
+      </div>
+    )}
 
       <main ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-8">
         <div className="max-w-3xl mx-auto w-full">
@@ -356,6 +374,8 @@ function ChatContent() {
         </div>
       </div>
     )}
+
+   
     </div>
   )
 }
